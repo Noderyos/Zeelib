@@ -36,7 +36,7 @@ int br_read(bitreader_t *br, int count) {
         if (!br->lsb) bit_idx = 7 - bit_idx;
 
         int bit = (br->buffer[br->_byte_offset] >> bit_idx) & 1;
-        out = (out << 1) | bit;
+        out |= bit << i;
 
         br->_bit_offset++;
         if (br->_bit_offset == 8) {

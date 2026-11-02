@@ -92,7 +92,7 @@ int main(int argc, char *argv[]) {
     int quit = 0;
     while (!quit) {
         int bfinal = br_read(&br, 1);
-        int btype = inv_bits(br_read(&br, 2), 2);
+        int btype = br_read(&br, 2);
 
         quit = bfinal;
 
@@ -140,7 +140,7 @@ static const uint8_t  DIST_EXTRA[] = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,
 
 void inflate_fixed(bitreader_t* br, uint8_t* out, size_t* out_len) {
     while (1) {
-        int cp = br_read(br, 7); // TODO
+        int cp = inv_bits(br_read(br, 7), 7);
         int symbol = -1;
         if (cp < 24) { // 0000000-0010111 256-279 Length/Distance
             symbol = cp + 256;
@@ -167,13 +167,13 @@ void inflate_fixed(bitreader_t* br, uint8_t* out, size_t* out_len) {
             int len_idx = symbol - 257;
 
             int length_bits = LEN_EXTRA[len_idx];
-            uint32_t length = LEN_BASE[len_idx] + inv_bits(br_read(br, length_bits), length_bits);
+            uint32_t length = LEN_BASE[len_idx] + br_read(br, length_bits);
 
-            uint32_t dist_code = br_read(br, 5);
+            uint32_t dist_code = inv_bits(br_read(br, 5), 5);
             assert(dist_code < 30 && "Invalid distance code");
 
             int dist_bits = DIST_EXTRA[dist_code];
-            uint32_t distance = DIST_BASE[dist_code] + inv_bits(br_read(br, dist_bits), dist_bits);
+            uint32_t distance = DIST_BASE[dist_code] + br_read(br, dist_bits);
             for (uint32_t i = 0; i < length; ++i) {
                 out[*out_len] = out[*out_len - distance];
                 (*out_len)++;
@@ -188,14 +188,14 @@ static const uint8_t CLEN_ORDER[19] = {
 };
 
 void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len) {
-    int hlit = inv_bits(br_read(br, 5), 5) + 257;
-    int hdist = inv_bits(br_read(br, 5), 5) + 1;
-    int hclen = inv_bits(br_read(br, 4), 4) + 4;
+    int hlit = br_read(br, 5) + 257;
+    int hdist = br_read(br, 5) + 1;
+    int hclen = br_read(br, 4) + 4;
 
     uint8_t clen_lengths[19] = {0};
 
     for (int i = 0; i < hclen; ++i) {
-        clen_lengths[CLEN_ORDER[i]] = inv_bits(br_read(br, 3), 3);
+        clen_lengths[CLEN_ORDER[i]] = br_read(br, 3);
     }
 
     uint16_t clen_codes[19];
@@ -214,19 +214,19 @@ void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len) {
             assert(i > 0 && "Cannot repeat without a prior length");
 
             uint8_t prev = lengths[i - 1];
-            int repeat = inv_bits(br_read(br, 2), 2) + 3;
+            int repeat = br_read(br, 2) + 3;
 
             assert(i + repeat <= total_codes);
             while (repeat--)
                 lengths[i++] = prev;
         } else if (symbol == 17) {
-            int repeat = inv_bits(br_read(br, 3), 3) + 3;
+            int repeat = br_read(br, 3) + 3;
 
             assert(i + repeat <= total_codes);
             while (repeat--)
                 lengths[i++] = 0;
         } else if (symbol == 18) {
-            int repeat = inv_bits(br_read(br, 7), 7) + 11;
+            int repeat = br_read(br, 7) + 11;
 
             assert(i + repeat <= total_codes);
             while (repeat--)
@@ -252,13 +252,13 @@ void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len) {
             int len_idx = symbol - 257;
 
             int length_bits = LEN_EXTRA[len_idx];
-            uint32_t length = LEN_BASE[len_idx] + inv_bits(br_read(br, length_bits), length_bits);
+            uint32_t length = LEN_BASE[len_idx] + br_read(br, length_bits);
 
             int dist_code = decode_symbol(br, dist_lens, dist_codes, hdist);
             assert(dist_code >= 0 && dist_code < 30 && "Invalid distance code");
 
             int dist_bits = DIST_EXTRA[dist_code];
-            uint32_t distance = DIST_BASE[dist_code] + inv_bits(br_read(br, dist_bits), dist_bits);
+            uint32_t distance = DIST_BASE[dist_code] + br_read(br, dist_bits);
             for (uint32_t i = 0; i < length; ++i) {
                 out[*out_len] = out[*out_len - distance];
                 (*out_len)++;
