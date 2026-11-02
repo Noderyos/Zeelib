@@ -1,7 +1,7 @@
 {
   description = "Zeelib build flake";
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-15.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
   };
 
   outputs =
