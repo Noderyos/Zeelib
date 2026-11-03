@@ -12,7 +12,7 @@ typedef struct bitreader {
 } bitreader_t;
 
 bitreader_t br_init(uint8_t *buffer, size_t len, int lsb);
-int br_read(bitreader_t *br, int count);
+unsigned int br_read(bitreader_t *br, size_t count);
 #endif
 
 #ifdef BR_IMPLEMENTATION
@@ -29,14 +29,14 @@ bitreader_t br_init(uint8_t *buffer, size_t len, int lsb) {
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
-int br_read(bitreader_t *br, int count) {
-    assert(count >= 0 && count < 32 && "Cannot read more than 32 bits");
+unsigned int br_read(bitreader_t *br, size_t count) {
+    assert(count < 32 && "Cannot read more than 32 bits");
 
     unsigned int out = 0;
-    int processed = 0;
+    size_t processed = 0;
 
     while (processed < count) {
-        int to_read = min(count - processed, 8 - br->_bit_offset);
+        size_t to_read = min(count - processed, 8 - br->_bit_offset);
         unsigned int mask = (1U << to_read) - 1;
         unsigned int chunk;
 
