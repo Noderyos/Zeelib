@@ -7,6 +7,8 @@
 #define BR_IMPLEMENTATION
 #include "br.h"
 
+#define OUT_BUF_SIZE 0x10000 // max size of inflate raw / 2x max LZ77 window size
+
 uint8_t *read_file(const char *filename, size_t *len) {
     FILE *f = fopen(filename, "rb");
     assert(f != NULL && "File not found");
@@ -22,7 +24,7 @@ uint8_t *read_file(const char *filename, size_t *len) {
     *len = f_size;
     return data;
 }
-uint8_t *load_zlib(const char *filename, size_t *zlib_len) {
+uint8_t *load_zlib(const char *filename, size_t *zlib_len, int *max_lz77_distance) {
     size_t len;
     uint8_t *zlib_data = read_file(filename, &len);
     fprintf(stderr, "[DEBUG] Loaded %s of size %ld\n", filename, len);
@@ -39,6 +41,8 @@ uint8_t *load_zlib(const char *filename, size_t *zlib_len) {
 
     assert(cm == 8 && "Unsupported zlib compression method");
     assert(cinfo < 8 && "Unsupported CINFO");
+
+    *max_lz77_distance = 1 << (cinfo+8);
 
     int fcheck = flg&0x1F;
     int fdict  = (flg>>5)&1;
@@ -65,9 +69,9 @@ int inv_bits(int val, int count) {
     return out;
 }
 
-void inflate_raw(bitreader_t *br, uint8_t *out, size_t *out_len);
-void inflate_fixed(bitreader_t *br, uint8_t* out, size_t* out_len);
-void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len);
+void inflate_raw(bitreader_t *br, uint8_t out[OUT_BUF_SIZE], size_t *out_len);
+void inflate_fixed(bitreader_t *br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance);
+void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance);
 
 void build_lut(const uint8_t *lens, int num_codes, uint16_t *out_codes);
 
@@ -80,14 +84,14 @@ int main(int argc, char *argv[]) {
     }
 
     size_t deflate_len;
-    uint8_t *deflate_data = load_zlib(argv[1], &deflate_len);
+    int max_lz77_distance;
+    uint8_t *deflate_data = load_zlib(argv[1], &deflate_len, &max_lz77_distance);
 
     uint8_t *in = deflate_data;
     size_t in_len = deflate_len;
-    uint8_t out[1024*1024];
+    uint8_t out[OUT_BUF_SIZE];
+    memset(out, 0, OUT_BUF_SIZE);
     size_t out_len = 0;
-
-    memset(out, 0, 1024*1024);
 
     bitreader_t br = br_init(in, in_len, 1);
 
@@ -101,8 +105,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[DEBUG] bfinal=%d btype=%d\n", bfinal, btype);
         switch (btype) {
             case 0: inflate_raw(&br, out, &out_len); break;
-            case 2: inflate_dynamic(&br, out, &out_len); break;
-            case 1: inflate_fixed(&br, out, &out_len); break;
+            case 2: inflate_dynamic(&br, out, &out_len, max_lz77_distance); break;
+            case 1: inflate_fixed(&br, out, &out_len, max_lz77_distance); break;
             case 3: assert(btype != 3 && "btype=3 is reserved");
             default: assert(0 && "unreachable");
         }
@@ -114,7 +118,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-void inflate_raw(bitreader_t *br, uint8_t *out, size_t *out_len) {
+void inflate_raw(bitreader_t *br, uint8_t out[OUT_BUF_SIZE], size_t *out_len) {
     if (br->_bit_offset != 0) {
         br->_bit_offset = 0;
         br->_byte_offset++;
@@ -140,7 +144,16 @@ static const uint8_t  LEN_EXTRA[] = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4
 static const uint16_t DIST_BASE[] = {1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
 static const uint8_t  DIST_EXTRA[] = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
 
-void inflate_fixed(bitreader_t* br, uint8_t* out, size_t* out_len) {
+inline size_t flush_out(uint8_t out[OUT_BUF_SIZE], size_t *out_len, size_t max_lz77_distance) {
+    size_t to_flush = *out_len - max_lz77_distance;
+
+    fwrite(out, 1, to_flush, stdout);
+    memmove(out, &out[to_flush], *out_len - to_flush);
+
+    return max_lz77_distance;
+}
+
+void inflate_fixed(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance) {
     while (1) {
         int cp = inv_bits(br_read(br, 7), 7);
         int symbol = -1;
@@ -162,6 +175,9 @@ void inflate_fixed(bitreader_t* br, uint8_t* out, size_t* out_len) {
         assert(symbol >= 0 && symbol <= 285 && "Invalid Huffman symbol");
 
         if (symbol < 256) {
+            if (*out_len + 1 >= OUT_BUF_SIZE)
+                *out_len = flush_out(out, out_len, max_lz77_distance);
+
             out[(*out_len)++] = symbol;
         } else if (symbol == 256) {
             break;
@@ -176,6 +192,10 @@ void inflate_fixed(bitreader_t* br, uint8_t* out, size_t* out_len) {
 
             int dist_bits = DIST_EXTRA[dist_code];
             uint32_t distance = DIST_BASE[dist_code] + br_read(br, dist_bits);
+
+            if (*out_len + length >= OUT_BUF_SIZE)
+                *out_len = flush_out(out, out_len, max_lz77_distance);
+
             for (uint32_t i = 0; i < length; ++i) {
                 out[*out_len] = out[*out_len - distance];
                 (*out_len)++;
@@ -189,7 +209,7 @@ static const uint8_t CLEN_ORDER[19] = {
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
 };
 
-void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len) {
+void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance) {
     int hlit = br_read(br, 5) + 257;
     int hdist = br_read(br, 5) + 1;
     int hclen = br_read(br, 4) + 4;
@@ -247,6 +267,9 @@ void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len) {
     while (1) {
         int symbol = decode_symbol(br, lit_lens, lit_codes, hlit);
         if (symbol < 256) {
+            if (*out_len + 1 >= OUT_BUF_SIZE)
+                *out_len = flush_out(out, out_len, max_lz77_distance);
+
             out[(*out_len)++] = symbol;
         } else if (symbol == 256) {
             break;
@@ -261,6 +284,10 @@ void inflate_dynamic(bitreader_t* br, uint8_t* out, size_t* out_len) {
 
             int dist_bits = DIST_EXTRA[dist_code];
             uint32_t distance = DIST_BASE[dist_code] + br_read(br, dist_bits);
+
+            if (*out_len + length >= OUT_BUF_SIZE)
+                *out_len = flush_out(out, out_len, max_lz77_distance);
+
             for (uint32_t i = 0; i < length; ++i) {
                 out[*out_len] = out[*out_len - distance];
                 (*out_len)++;
