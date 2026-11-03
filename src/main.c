@@ -73,9 +73,14 @@ void inflate_raw(bitreader_t *br, uint8_t out[OUT_BUF_SIZE], size_t *out_len);
 void inflate_fixed(bitreader_t *br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance);
 void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance);
 
-void build_lut(const uint8_t *lens, int num_codes, uint16_t *out_codes);
+typedef struct lut_entry {
+    uint8_t len;
+    uint16_t code;
+} lut_entry_t;
 
-int decode_symbol(bitreader_t *br, const uint8_t *lens, const uint16_t *codes, int num_codes);
+void build_codes(const uint8_t *lens, size_t num_codes, uint16_t *out_codes);
+void build_lut(uint16_t *codes, uint8_t *lens, size_t num_codes, lut_entry_t *out_lut, size_t lut_size);
+int decode_symbol(bitreader_t *br, lut_entry_t *lut);
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -144,13 +149,13 @@ static const uint8_t  LEN_EXTRA[] = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4
 static const uint16_t DIST_BASE[] = {1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577};
 static const uint8_t  DIST_EXTRA[] = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13};
 
-inline size_t flush_out(uint8_t out[OUT_BUF_SIZE], size_t *out_len, size_t max_lz77_distance) {
+inline void flush_out(uint8_t out[OUT_BUF_SIZE], size_t *out_len, size_t max_lz77_distance) {
     size_t to_flush = *out_len - max_lz77_distance;
 
     fwrite(out, 1, to_flush, stdout);
     memmove(out, &out[to_flush], *out_len - to_flush);
 
-    return max_lz77_distance;
+    *out_len = max_lz77_distance;
 }
 
 void inflate_fixed(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, int max_lz77_distance) {
@@ -176,7 +181,7 @@ void inflate_fixed(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, 
 
         if (symbol < 256) {
             if (*out_len + 1 >= OUT_BUF_SIZE)
-                *out_len = flush_out(out, out_len, max_lz77_distance);
+                flush_out(out, out_len, max_lz77_distance);
 
             out[(*out_len)++] = symbol;
         } else if (symbol == 256) {
@@ -194,7 +199,7 @@ void inflate_fixed(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len, 
             uint32_t distance = DIST_BASE[dist_code] + br_read(br, dist_bits);
 
             if (*out_len + length >= OUT_BUF_SIZE)
-                *out_len = flush_out(out, out_len, max_lz77_distance);
+                flush_out(out, out_len, max_lz77_distance);
 
             for (uint32_t i = 0; i < length; ++i) {
                 out[*out_len] = out[*out_len - distance];
@@ -221,14 +226,17 @@ void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len
     }
 
     uint16_t clen_codes[19];
-    build_lut(clen_lengths, 19, clen_codes);
+    build_codes(clen_lengths, 19, clen_codes);
+
+    lut_entry_t clen_lut[128]; // lengths are picked from 3 bits => 7bits
+    build_lut(clen_codes, clen_lengths, 19, clen_lut, 128);
 
     uint8_t lengths[286 + 32] = {0};
     int total_codes = hlit + hdist;
     int i = 0;
 
     while (i < total_codes) {
-        int symbol = decode_symbol(br, clen_lengths, clen_codes, 19);
+        int symbol = decode_symbol(br, clen_lut);
 
         if (symbol <= 15) {
             lengths[i++] = symbol;
@@ -261,14 +269,19 @@ void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len
     uint16_t lit_codes[286];
     uint16_t dist_codes[32];
 
-    build_lut(lit_lens, hlit, lit_codes);
-    build_lut(dist_lens, hdist, dist_codes);
+    build_codes(lit_lens, hlit, lit_codes);
+    build_codes(dist_lens, hdist, dist_codes);
+
+    lut_entry_t lit_lut[32768]; // max length is 15 bits
+    build_lut(lit_codes, lit_lens, hlit, lit_lut, 32768);
+    lut_entry_t dist_lut[32768];
+    build_lut(dist_codes, dist_lens, hdist, dist_lut, 32768);
 
     while (1) {
-        int symbol = decode_symbol(br, lit_lens, lit_codes, hlit);
+        int symbol = decode_symbol(br, lit_lut);
         if (symbol < 256) {
             if (*out_len + 1 >= OUT_BUF_SIZE)
-                *out_len = flush_out(out, out_len, max_lz77_distance);
+                flush_out(out, out_len, max_lz77_distance);
 
             out[(*out_len)++] = symbol;
         } else if (symbol == 256) {
@@ -279,14 +292,14 @@ void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len
             int length_bits = LEN_EXTRA[len_idx];
             uint32_t length = LEN_BASE[len_idx] + br_read(br, length_bits);
 
-            int dist_code = decode_symbol(br, dist_lens, dist_codes, hdist);
+            int dist_code = decode_symbol(br, dist_lut);
             assert(dist_code >= 0 && dist_code < 30 && "Invalid distance code");
 
             int dist_bits = DIST_EXTRA[dist_code];
             uint32_t distance = DIST_BASE[dist_code] + br_read(br, dist_bits);
 
             if (*out_len + length >= OUT_BUF_SIZE)
-                *out_len = flush_out(out, out_len, max_lz77_distance);
+                flush_out(out, out_len, max_lz77_distance);
 
             for (uint32_t i = 0; i < length; ++i) {
                 out[*out_len] = out[*out_len - distance];
@@ -296,12 +309,12 @@ void inflate_dynamic(bitreader_t* br, uint8_t out[OUT_BUF_SIZE], size_t* out_len
     }
 }
 
-void build_lut(const uint8_t *lens, int num_codes, uint16_t *out_codes) {
+void build_codes(const uint8_t *lens, size_t num_codes, uint16_t *out_codes) {
     int bl_counts[16] = {0};  // DEFLATE max bit length is 15
     int next_codes[16] = {0};
     int max_len = 0;
 
-    for (int i = 0; i < num_codes; i++) {
+    for (size_t i = 0; i < num_codes; i++) {
         out_codes[i] = 0;
         if (lens[i] > 0) {
             bl_counts[lens[i]]++;
@@ -316,7 +329,7 @@ void build_lut(const uint8_t *lens, int num_codes, uint16_t *out_codes) {
         next_codes[bits] = code;
     }
 
-    for (int i = 0; i < num_codes; i++) {
+    for (size_t i = 0; i < num_codes; i++) {
         int len = lens[i];
         if (len != 0) {
             out_codes[i] = next_codes[len];
@@ -325,25 +338,29 @@ void build_lut(const uint8_t *lens, int num_codes, uint16_t *out_codes) {
     }
 }
 
-int decode_symbol(bitreader_t *br, const uint8_t *lens, const uint16_t *codes, int num_codes) {
+void build_lut(uint16_t *codes, uint8_t *lens, size_t num_codes, lut_entry_t *out_lut, size_t lut_size) {
+    for (size_t i = 0; i < lut_size; ++i) {
+        out_lut[i].len = 0;
+    }
+
+    for (size_t i = 0; i < num_codes; ++i) {
+        if (lens[i] > 0) {
+            out_lut[codes[i]].len = lens[i];
+            out_lut[codes[i]].code = i;
+        }
+    }
+}
+
+int decode_symbol(bitreader_t *br, lut_entry_t *lut) {
     int code = 0;
     int code_bits = 0;
 
-    int max_len = 0;
-    for (int i = 0; i < num_codes; i++) {
-        if (lens[i] > max_len) max_len = lens[i];
-    }
-    if (max_len == 0) return -1;
-
-    while (code_bits < max_len) {
+    while (code_bits < 16) {
         code = (code << 1) | br_read(br, 1); // 1 bit MSB-first
         code_bits++;
 
-        for (int j = 0; j < num_codes; j++) {
-            if (lens[j] == code_bits && codes[j] == code) {
-                return j;
-            }
-        }
+        if (lut[code].len == code_bits)
+            return lut[code].code;
     }
     assert(0 && "Invalid Huffman code in stream");
     return -1;
