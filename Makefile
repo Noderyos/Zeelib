@@ -7,3 +7,5 @@ all: zeelib
 zeelib: src/main.c
 	$(CC) -o $@ $(CFLAGS) $^
 
+clean:
+	rm -rf zeelib

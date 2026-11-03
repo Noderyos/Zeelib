@@ -9,6 +9,8 @@
 
 uint8_t *read_file(const char *filename, size_t *len) {
     FILE *f = fopen(filename, "rb");
+    assert(f != NULL && "File not found");
+
     fseek(f, 0, SEEK_END);
     size_t f_size = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -104,9 +106,9 @@ int main(int argc, char *argv[]) {
             case 3: assert(btype != 3 && "btype=3 is reserved");
             default: assert(0 && "unreachable");
         }
+        fwrite(out, 1, out_len, stdout);
+        out_len = 0;
     }
-
-    fwrite(out, 1, out_len, stdout);
 
     zlib_free(deflate_data);
     return 0;
