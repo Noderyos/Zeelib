@@ -27,18 +27,27 @@ bitreader_t br_init(uint8_t *buffer, size_t len, int lsb) {
     };
 }
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 int br_read(bitreader_t *br, int count) {
     assert(count >= 0 && count < 32 && "Cannot read more than 32 bits");
 
-    int out = 0;
-    for (int i = 0; i < count; ++i) {
-        size_t bit_idx = br->_bit_offset;
-        if (!br->lsb) bit_idx = 7 - bit_idx;
+    unsigned int out = 0;
+    int processed = 0;
 
-        int bit = (br->buffer[br->_byte_offset] >> bit_idx) & 1;
-        out |= bit << i;
+    while (processed < count) {
+        int to_read = min(count - processed, 8 - br->_bit_offset);
+        unsigned int mask = (1U << to_read) - 1;
+        unsigned int chunk;
 
-        br->_bit_offset++;
+        if (br->lsb) chunk = (br->buffer[br->_byte_offset] >> br->_bit_offset) & mask;
+        else chunk = (br->buffer[br->_byte_offset] >> (8 - br->_bit_offset - to_read)) & mask;
+
+        out |= chunk << processed;
+
+        processed += to_read;
+        br->_bit_offset += to_read;
+
         if (br->_bit_offset == 8) {
             br->_bit_offset = 0;
             br->_byte_offset++;
