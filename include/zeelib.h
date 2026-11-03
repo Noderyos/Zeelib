@@ -1,6 +1,9 @@
 #ifndef ZEELIB_H
 #define ZEELIB_H
 
+#include <stdint.h>
+#include <stdlib.h>
+
 void zeelib_decompress(
     uint8_t *in, size_t in_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
@@ -10,6 +13,12 @@ void zeelib_decompress(
 
 #ifdef ZEELIB_IMPLEMENTATION
 #undef ZEELIB_IMPLEMENTATION
+
+#include <string.h>
+#include <assert.h>
+
+#define BR_IMPLEMENTATION
+#include "br.h"
 
 #define OUT_SIZE 0x10000 // max size of inflate raw / 2x max LZ77 window
 
@@ -49,7 +58,7 @@ static const uint16_t _ZL_LEN_BASE[] = {
     3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
     35,43,51,59,67,83,99,115,131,163,195,227,258
 };
-static const uint8_t  _ZL_LEN_EXTRA[] = {
+static const uint8_t _ZL_LEN_EXTRA[] = {
     0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0
 };
 
@@ -114,10 +123,13 @@ void _zl_inflate_fixed(
             if (*out_len + length >= OUT_SIZE)
                 _zl_flush_out(out, out_len, max_lz77_dist, cb);
 
-            for (uint32_t i = 0; i < length; ++i) {
-                out[*out_len] = out[*out_len - distance];
-                (*out_len)++;
+            uint8_t *dst = &out[*out_len];
+            uint8_t *src = dst - distance;
+            uint8_t *end = dst + length;
+            while (dst != end) {
+                *dst++ = *src++;
             }
+            *out_len += length;
         }
     }
 }
@@ -284,10 +296,13 @@ void _zl_inflate_dynamic(
             if (*out_len + length >= OUT_SIZE)
                 _zl_flush_out(out, out_len, max_lz77_dist, cb);
 
-            for (uint32_t i = 0; i < length; ++i) {
-                out[*out_len] = out[*out_len - distance];
-                (*out_len)++;
+            uint8_t *dst = &out[*out_len];
+            uint8_t *src = dst - distance;
+            uint8_t *end = dst + length;
+            while (dst != end) {
+                *dst++ = *src++;
             }
+            *out_len += length;
         }
     }
 }
