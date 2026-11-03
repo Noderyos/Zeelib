@@ -2,9 +2,8 @@
 #define ZEELIB_H
 
 #include <stdint.h>
-#include <stdlib.h>
 
-void zeelib_decompress(
+int zeelib_decompress(
     uint8_t *in, size_t in_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 );
@@ -15,12 +14,18 @@ void zeelib_decompress(
 #undef ZEELIB_IMPLEMENTATION
 
 #include <string.h>
-#include <assert.h>
 
 #define BR_IMPLEMENTATION
 #include "br.h"
 
 #define OUT_SIZE 0x10000 // max size of inflate raw / 2x max LZ77 window
+
+#ifdef ZEELIB_ASSERT
+#define _ZL_ASSERT(x, reason) \
+    if (!(x)) {fprintf(stderr, "[ERROR] " reason "\n");return -1;}
+#else
+#define _ZL_ASSERT(x, reason) if (!(x)) return -1;
+#endif
 
 inline void _zl_flush_out(
     uint8_t out[OUT_SIZE], size_t *out_len, size_t max_lz77_dist,
@@ -32,24 +37,25 @@ inline void _zl_flush_out(
     *out_len = max_lz77_dist;
 }
 
-void _zl_inflate_raw(bitreader_t *br, uint8_t out[OUT_SIZE], size_t *out_len) {
+int _zl_inflate_raw(bitreader_t *br, uint8_t out[OUT_SIZE], size_t *out_len) {
     if (br->_bit_offset != 0) {
         br->_bit_offset = 0;
         br->_byte_offset++;
     }
 
-    assert(br->_byte_offset + 4 < br->len && "Not enough data to decompress");
+    _ZL_ASSERT(br->_byte_offset + 4 < br->len, "Not enough data to decompress");
 
     size_t bo = br->_byte_offset;
     uint16_t len = br->buffer[bo+1]<<8 | br->buffer[bo];
     uint16_t nlen = br->buffer[bo+3]<<8 | br->buffer[bo+2];
     br->_byte_offset += 4;
 
-    assert(len == ((~nlen)&0xFFFF) && "Corrupted length");
+    _ZL_ASSERT(len == ((~nlen)&0xFFFF), "Corrupted length");
 
     memcpy(&out[*out_len], &br->buffer[br->_byte_offset], len);
     *out_len += len;
     br->_byte_offset += len;
+    return 0;
 }
 
 // Fixed Huffman
@@ -76,7 +82,7 @@ int _zl_inv_bits(int val, int count) {
     return out;
 }
 
-void _zl_inflate_fixed(
+int _zl_inflate_fixed(
     bitreader_t* br,
     uint8_t out[OUT_SIZE], size_t* out_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
@@ -99,7 +105,7 @@ void _zl_inflate_fixed(
                 }
             }
         }
-        assert(symbol >= 0 && symbol <= 285 && "Invalid Huffman symbol");
+        _ZL_ASSERT(symbol >= 0 && symbol <= 285, "Invalid Huffman symbol");
 
         if (symbol < 256) {
             if (*out_len + 1 >= OUT_SIZE)
@@ -115,7 +121,7 @@ void _zl_inflate_fixed(
             uint32_t length = _ZL_LEN_BASE[len_idx] + br_read(br, length_bits);
 
             uint32_t dist_code = _zl_inv_bits(br_read(br, 5), 5);
-            assert(dist_code < 30 && "Invalid distance code");
+            _ZL_ASSERT(dist_code < 30, "Invalid distance code");
 
             int dist_bits = _ZL_DIST_EXTRA[dist_code];
             uint32_t distance = _ZL_DIST_BASE[dist_code] + br_read(br, dist_bits);
@@ -132,6 +138,7 @@ void _zl_inflate_fixed(
             *out_len += length;
         }
     }
+    return 0;
 }
 
 // Dynamic Huffman
@@ -201,11 +208,11 @@ int _zl_decode_symbol(bitreader_t *br, _zl_lut_entry_t *lut) {
         if (lut[code].len == code_bits)
             return lut[code].code;
     }
-    assert(0 && "Invalid Huffman code in stream");
+    _ZL_ASSERT(0, "Invalid Huffman code in stream");
     return -1;
 }
 
-void _zl_inflate_dynamic(
+int _zl_inflate_dynamic(
     bitreader_t* br,
     uint8_t out[OUT_SIZE], size_t* out_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
@@ -236,24 +243,24 @@ void _zl_inflate_dynamic(
         if (symbol <= 15) {
             lengths[i++] = symbol;
         } else if (symbol == 16) {
-            assert(i > 0 && "Cannot repeat without a prior length");
+            _ZL_ASSERT(i > 0, "Cannot repeat without a prior length");
 
             uint8_t prev = lengths[i - 1];
             int repeat = br_read(br, 2) + 3;
 
-            assert(i + repeat <= total_codes);
+            _ZL_ASSERT(i + repeat <= total_codes, "Too much codes");
             while (repeat--)
                 lengths[i++] = prev;
         } else if (symbol == 17) {
             int repeat = br_read(br, 3) + 3;
 
-            assert(i + repeat <= total_codes);
+            _ZL_ASSERT(i + repeat <= total_codes, "Too much codes");
             while (repeat--)
                 lengths[i++] = 0;
         } else if (symbol == 18) {
             int repeat = br_read(br, 7) + 11;
 
-            assert(i + repeat <= total_codes);
+            _ZL_ASSERT(i + repeat <= total_codes, "Too much codes");
             while (repeat--)
                 lengths[i++] = 0;
         }
@@ -288,7 +295,7 @@ void _zl_inflate_dynamic(
             uint32_t length = _ZL_LEN_BASE[len_idx] + br_read(br, length_bits);
 
             int dist_code = _zl_decode_symbol(br, dist_lut);
-            assert(dist_code >= 0 && dist_code < 30 && "Invalid distance code");
+            _ZL_ASSERT(dist_code >= 0 && dist_code < 30, "Invalid distance code");
 
             int dist_bits = _ZL_DIST_EXTRA[dist_code];
             uint32_t distance = _ZL_DIST_BASE[dist_code] + br_read(br, dist_bits);
@@ -305,9 +312,10 @@ void _zl_inflate_dynamic(
             *out_len += length;
         }
     }
+    return 0;
 }
 
-void zeelib_decompress(
+int zeelib_decompress(
     uint8_t *in, size_t in_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 ) {
@@ -325,18 +333,26 @@ void zeelib_decompress(
         quit = bfinal;
 
         switch (btype) {
-            case 0: _zl_inflate_raw(&br, out, &out_len); break;
+            case 0:
+                if (_zl_inflate_raw(&br, out, &out_len) < 0)
+                    return -1;
+                break;
             case 2:
-                _zl_inflate_dynamic(&br, out, &out_len, max_lz77_dist, cb); break;
+                if (_zl_inflate_dynamic(&br, out, &out_len, max_lz77_dist, cb) < 0)
+                    return -1;
+                break;
             case 1:
-                _zl_inflate_fixed(&br, out, &out_len, max_lz77_dist, cb); break;
-            case 3: assert(btype != 3 && "btype=3 is reserved");
-            default: assert(0 && "unreachable");
+                if (_zl_inflate_fixed(&br, out, &out_len, max_lz77_dist, cb) < 0)
+                    return -1;
+                break;
+            case 3: _ZL_ASSERT(0, "btype=3 is reserved");
+            default: _ZL_ASSERT(0, "unreachable");
         }
 
         cb(out, out_len);
         out_len = 0;
     }
+    return 0;
 }
 
 #endif

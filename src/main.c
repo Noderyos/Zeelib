@@ -1,6 +1,9 @@
 #include <stdio.h>
 
 #define ZEELIB_IMPLEMENTATION
+#include <assert.h>
+#include <stdlib.h>
+
 #include "zeelib.h"
 
 uint8_t *read_file(const char *filename, size_t *len) {
@@ -71,7 +74,10 @@ int main(int argc, char *argv[]) {
     int max_lz77_dist;
     uint8_t *deflate_data = load_zlib(argv[1], &deflate_len, &max_lz77_dist);
 
-    zeelib_decompress(deflate_data, deflate_len, max_lz77_dist, print_callback);
+    int r = zeelib_decompress(deflate_data, deflate_len, max_lz77_dist, print_callback);
+    if (r < 0)
+        return 1;
+
 
     zlib_free(deflate_data);
     return 0;
