@@ -4,6 +4,11 @@
 #include <stdint.h>
 
 int zeelib_decompress(
+    uint8_t *in, size_t in_len,
+    void (*cb)(uint8_t *, size_t)
+);
+
+int zeelib_raw_decompress(
     uint8_t *in, size_t in_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 );
@@ -26,6 +31,37 @@ int zeelib_decompress(
 #else
 #define _ZL_ASSERT(x, reason) if (!(x)) return -1;
 #endif
+
+int zeelib_decompress(
+    uint8_t *in, size_t in_len,
+    void (*cb)(uint8_t *, size_t)
+) {
+    _ZL_ASSERT(in_len > 2, "Not enough data for zlib header");
+
+    uint8_t cmf = in[0];
+    uint8_t flg = in[1];
+
+    uint16_t crc = cmf<<8 | flg;
+    _ZL_ASSERT(crc % 31 == 0, "Invalid zlib checksum");
+
+    int cm    =  cmf    &0xF;
+    int cinfo = (cmf>>4)&0xF;
+
+    _ZL_ASSERT(cm == 8, "Unsupported zlib compression method");
+    _ZL_ASSERT(cinfo < 8, "Unsupported zlib CINFO");
+
+    int max_lz77_dist = 1 << (cinfo+8);
+
+    int fcheck = flg&0x1F;
+    int fdict  = (flg>>5)&1;
+    int flevel = (flg>>6)&3;
+    (void)fcheck;
+    (void)flevel;
+
+    uint8_t *zlib_in = in + (fdict ? 6 : 2);
+    size_t zlib_len = in_len - (fdict ? 6 : 2);
+    return zeelib_raw_decompress(zlib_in, zlib_len, max_lz77_dist, cb);
+}
 
 void _zl_flush_out(
     uint8_t out[OUT_SIZE], size_t *out_len, size_t max_lz77_dist,
@@ -315,7 +351,7 @@ int _zl_inflate_dynamic(
     return 0;
 }
 
-int zeelib_decompress(
+int zeelib_raw_decompress(
     uint8_t *in, size_t in_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 ) {
