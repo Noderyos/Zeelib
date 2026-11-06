@@ -30,8 +30,10 @@ DOCUMENTATION
               cb can be called multiple times during inflate process.
             - Returns 0 on success, negative value otherwise
 
-        * int zeelib_raw_decompress(uint8_t *in, size_t in_len, int max_lz77_dist, void (*cb)(uint8_t *, size_t));
-            - Inflate a buffer containing zlib data
+        * int zeelib_raw_decompress(uint8_t *in, size_t in_len, int max_lz77_dist, void (*cb)(uint8_t*, size_t));
+            - Inflate a buffer containing deflate data
+            - max_lz77_dist is the window size used when compressing.
+              Use 32768 if unknown.
             - cb is a callback taking a buffer containing output data, and its size.
               cb can be called multiple times during inflate process.
             - Returns 0 on success, negative value otherwise
