@@ -27,7 +27,7 @@ int zeelib_decompress(
 #define _ZL_ASSERT(x, reason) if (!(x)) return -1;
 #endif
 
-inline void _zl_flush_out(
+void _zl_flush_out(
     uint8_t out[OUT_SIZE], size_t *out_len, size_t max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 ) {
