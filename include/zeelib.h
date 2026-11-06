@@ -20,9 +20,6 @@ int zeelib_raw_decompress(
 
 #include <string.h>
 
-#define BR_IMPLEMENTATION
-#include "br.h"
-
 #define OUT_SIZE 0x10000 // max size of inflate raw / 2x max LZ77 window
 
 #ifdef ZEELIB_ASSERT
@@ -31,6 +28,54 @@ int zeelib_raw_decompress(
 #else
 #define _ZL_ASSERT(x, reason) if (!(x)) return -1;
 #endif
+
+typedef struct _zl_br {
+    uint8_t *buffer;
+    size_t len;
+    int lsb;
+    size_t _byte_offset;
+    size_t _bit_offset;
+} _zl_br_t;
+
+_zl_br_t _zl_br_init(uint8_t *buffer, size_t len, int lsb) {
+    return (_zl_br_t){
+        .buffer = buffer,
+        .len = len,
+        .lsb = lsb,
+        ._byte_offset = 0,
+        ._bit_offset = 0
+    };
+}
+
+#define _lz_min(a, b) ((a) < (b) ? (a) : (b))
+
+int _zl_br_read(_zl_br_t *br, size_t count) {
+    assert(count < 32 && "Cannot read more than 32 bits");
+
+    unsigned int out = 0;
+    size_t processed = 0;
+
+    while (processed < count) {
+        size_t to_read = _lz_min(count - processed, 8 - br->_bit_offset);
+        unsigned int mask = (1U << to_read) - 1;
+        unsigned int chunk;
+
+        if (br->lsb) chunk = (br->buffer[br->_byte_offset] >> br->_bit_offset) & mask;
+        else chunk = (br->buffer[br->_byte_offset] >> (8 - br->_bit_offset - to_read)) & mask;
+
+        out |= chunk << processed;
+
+        processed += to_read;
+        br->_bit_offset += to_read;
+
+        if (br->_bit_offset == 8) {
+            br->_bit_offset = 0;
+            br->_byte_offset++;
+        }
+    }
+
+    return (int)out;
+}
 
 int zeelib_decompress(
     uint8_t *in, size_t in_len,
@@ -73,7 +118,7 @@ void _zl_flush_out(
     *out_len = max_lz77_dist;
 }
 
-int _zl_inflate_raw(bitreader_t *br, uint8_t out[OUT_SIZE], size_t *out_len) {
+int _zl_inflate_raw(_zl_br_t *br, uint8_t out[OUT_SIZE], size_t *out_len) {
     if (br->_bit_offset != 0) {
         br->_bit_offset = 0;
         br->_byte_offset++;
@@ -119,23 +164,23 @@ int _zl_inv_bits(int val, int count) {
 }
 
 int _zl_inflate_fixed(
-    bitreader_t* br,
+    _zl_br_t* br,
     uint8_t out[OUT_SIZE], size_t* out_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 ) {
     while (1) {
-        int cp = _zl_inv_bits(br_read(br, 7), 7);
+        int cp = _zl_inv_bits(_zl_br_read(br, 7), 7);
         int symbol = -1;
         if (cp < 24) { // 0000000-0010111 256-279 Length/Distance
             symbol = cp + 256;
         } else {
-            cp = (cp << 1) | br_read(br, 1);
+            cp = (cp << 1) | _zl_br_read(br, 1);
             if (cp >= 48 && cp < 192) { // 00110000-10111111 0-143 Literal
                 symbol = cp - 48;
             } else if (cp >= 192 && cp < 200) { // 11000000-11000111 280-287 Length/Distance
                 symbol = cp - 192 + 280;
             } else {
-                cp = (cp << 1) | br_read(br, 1);
+                cp = (cp << 1) | _zl_br_read(br, 1);
                 if (cp >= 400 && cp < 512) { // 110010000-111111111 144-255 Literal
                     symbol = cp - 400 + 144;
                 }
@@ -154,13 +199,13 @@ int _zl_inflate_fixed(
             int len_idx = symbol - 257;
 
             int length_bits = _ZL_LEN_EXTRA[len_idx];
-            uint32_t length = _ZL_LEN_BASE[len_idx] + br_read(br, length_bits);
+            uint32_t length = _ZL_LEN_BASE[len_idx] + _zl_br_read(br, length_bits);
 
-            uint32_t dist_code = _zl_inv_bits(br_read(br, 5), 5);
+            uint32_t dist_code = _zl_inv_bits(_zl_br_read(br, 5), 5);
             _ZL_ASSERT(dist_code < 30, "Invalid distance code");
 
             int dist_bits = _ZL_DIST_EXTRA[dist_code];
-            uint32_t distance = _ZL_DIST_BASE[dist_code] + br_read(br, dist_bits);
+            uint32_t distance = _ZL_DIST_BASE[dist_code] + _zl_br_read(br, dist_bits);
 
             if (*out_len + length >= OUT_SIZE)
                 _zl_flush_out(out, out_len, max_lz77_dist, cb);
@@ -233,12 +278,12 @@ void _zl_build_lut(
     }
 }
 
-int _zl_decode_symbol(bitreader_t *br, _zl_lut_entry_t *lut) {
+int _zl_decode_symbol(_zl_br_t *br, _zl_lut_entry_t *lut) {
     int code = 0;
     int code_bits = 0;
 
     while (code_bits < 16) {
-        code = (code << 1) | br_read(br, 1); // 1 bit MSB-first
+        code = (code << 1) | _zl_br_read(br, 1); // 1 bit MSB-first
         code_bits++;
 
         if (lut[code].len == code_bits)
@@ -249,18 +294,18 @@ int _zl_decode_symbol(bitreader_t *br, _zl_lut_entry_t *lut) {
 }
 
 int _zl_inflate_dynamic(
-    bitreader_t* br,
+    _zl_br_t* br,
     uint8_t out[OUT_SIZE], size_t* out_len, int max_lz77_dist,
     void (*cb)(uint8_t *, size_t)
 ) {
-    int hlit = br_read(br, 5) + 257;
-    int hdist = br_read(br, 5) + 1;
-    int hclen = br_read(br, 4) + 4;
+    int hlit = _zl_br_read(br, 5) + 257;
+    int hdist = _zl_br_read(br, 5) + 1;
+    int hclen = _zl_br_read(br, 4) + 4;
 
     uint8_t clen_lengths[19] = {0};
 
     for (int i = 0; i < hclen; ++i) {
-        clen_lengths[_ZL_CLEN_ORDER[i]] = br_read(br, 3);
+        clen_lengths[_ZL_CLEN_ORDER[i]] = _zl_br_read(br, 3);
     }
 
     uint16_t clen_codes[19];
@@ -282,19 +327,19 @@ int _zl_inflate_dynamic(
             _ZL_ASSERT(i > 0, "Cannot repeat without a prior length");
 
             uint8_t prev = lengths[i - 1];
-            int repeat = br_read(br, 2) + 3;
+            int repeat = _zl_br_read(br, 2) + 3;
 
             _ZL_ASSERT(i + repeat <= total_codes, "Too much codes");
             while (repeat--)
                 lengths[i++] = prev;
         } else if (symbol == 17) {
-            int repeat = br_read(br, 3) + 3;
+            int repeat = _zl_br_read(br, 3) + 3;
 
             _ZL_ASSERT(i + repeat <= total_codes, "Too much codes");
             while (repeat--)
                 lengths[i++] = 0;
         } else if (symbol == 18) {
-            int repeat = br_read(br, 7) + 11;
+            int repeat = _zl_br_read(br, 7) + 11;
 
             _ZL_ASSERT(i + repeat <= total_codes, "Too much codes");
             while (repeat--)
@@ -328,13 +373,13 @@ int _zl_inflate_dynamic(
             int len_idx = symbol - 257;
 
             int length_bits = _ZL_LEN_EXTRA[len_idx];
-            uint32_t length = _ZL_LEN_BASE[len_idx] + br_read(br, length_bits);
+            uint32_t length = _ZL_LEN_BASE[len_idx] + _zl_br_read(br, length_bits);
 
             int dist_code = _zl_decode_symbol(br, dist_lut);
             _ZL_ASSERT(dist_code >= 0 && dist_code < 30, "Invalid distance code");
 
             int dist_bits = _ZL_DIST_EXTRA[dist_code];
-            uint32_t distance = _ZL_DIST_BASE[dist_code] + br_read(br, dist_bits);
+            uint32_t distance = _ZL_DIST_BASE[dist_code] + _zl_br_read(br, dist_bits);
 
             if (*out_len + length >= OUT_SIZE)
                 _zl_flush_out(out, out_len, max_lz77_dist, cb);
@@ -359,12 +404,12 @@ int zeelib_raw_decompress(
     memset(out, 0, OUT_SIZE);
     size_t out_len = 0;
 
-    bitreader_t br = br_init(in, in_len, 1);
+    _zl_br_t br = _zl_br_init(in, in_len, 1);
 
     int quit = 0;
     while (!quit) {
-        int bfinal = br_read(&br, 1);
-        int btype = br_read(&br, 2);
+        int bfinal = _zl_br_read(&br, 1);
+        int btype = _zl_br_read(&br, 2);
 
         quit = bfinal;
 
