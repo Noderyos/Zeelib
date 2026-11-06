@@ -46,14 +46,14 @@ uint8_t *load_zlib(const char *filename, size_t *zlib_len, int *max_lz77_dist) {
     int fdict  = (flg>>5)&1;
     int flevel = (flg>>6)&3;
 
-    assert(fdict == 0 && "TODO support DICT");
+    zlib_data += fdict ? 6 : 2;
 
     fprintf(stderr, "[DEBUG] cm=%d cinfo=%d\n", cm, cinfo);
     fprintf(stderr,
         "[DEBUG] fcheck=%d fdict=%d flevel=%d\n", fcheck, fdict, flevel);
 
-    *zlib_len = len - 2;
-    return zlib_data + 2;
+    *zlib_len = len - (fdict ? 6 : 2);
+    return zlib_data;
 }
 
 void zlib_free(uint8_t *buf) {
